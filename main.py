@@ -34,7 +34,7 @@ class DataRequest(BaseModel):
     userAgent: str
 
 
-@app.post("/asyncseleniumhttpx")
+@app.post("/seleniumhttpx")
 def index(data: DataRequest):
     try:
         headers = {"User-Agent": data.userAgent}
@@ -89,7 +89,7 @@ def scrape(keyword, page):
     # chrome_options = Options()
     # chrome_options.add_argument("--headless")
 
-    driver = webdriver.Chrome()
+    driver = webdriver.Chrome("./chromedriver")
     try:
         # await asyncio.sleep(2)
         driver.get(f"https://www.tokopedia.com/search?q={keyword}&page={page}")
