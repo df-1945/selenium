@@ -9,11 +9,12 @@ import concurrent.futures
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
+from enum import Enum
+import psutil
 
 app = FastAPI()
 
 origins = [
-    "http://localhost:3000",
     "https://kikisan.pages.dev",
     "https://kikisan.site",
     "https://www.kikisan.site",
@@ -28,23 +29,81 @@ app.add_middleware(
 )
 
 
+class Metode(str, Enum):
+    def __str__(self):
+        return str(self.value)
+
+    HTTPX = "SELENIUMHTTPX"
+
+
 class DataRequest(BaseModel):
-    pages: int
     keyword: str
-    userAgent: str
+    pages: int
+    metode: Metode
 
 
-@app.post("/seleniumhttpx")
-def index(data: DataRequest):
+data_seleniumhttpx = []
+
+
+@app.post("/seleniumhttpx/{userAgent}")
+def input_seleniumhttpx(userAgent: str, input: DataRequest):
     try:
-        headers = {"User-Agent": data.userAgent}
+        headers = {"User-Agent": userAgent}
+        process = psutil.Process()
+
+        # Dapatkan penggunaan CPU sebelum eksekusi
+        cpu_percent_before = process.cpu_percent(interval=None)
+
+        # Dapatkan penggunaan RAM sebelum eksekusi
+        memory_info_before = process.memory_info().rss
+
+        sent_bytes_start, received_bytes_start = get_network_usage()
+
         start_time = time.time()
-        loop = main(headers, data.keyword, data.pages)
+        hasil = main(headers, input.keyword, input.pages)
         end_time = time.time()
-        print(
-            f"Berhasil mengambil {len(loop)} produk dalam {end_time - start_time} detik."
+
+        sent_bytes_end, received_bytes_end = get_network_usage()
+
+        sent_bytes_total = sent_bytes_end - sent_bytes_start
+        received_bytes_total = received_bytes_end - received_bytes_start
+
+        # Dapatkan penggunaan CPU saat eksekusi
+        cpu_percent_during = process.cpu_percent(interval=None)
+
+        # Dapatkan penggunaan RAM saat eksekusi
+        memory_info_during = process.memory_info().rss
+
+        cpu_percent_total = (
+            max(cpu_percent_during, cpu_percent_before) - cpu_percent_before
         )
-        return loop
+        memory_info_total = (
+            max(memory_info_during, memory_info_before) - memory_info_before
+        )
+
+        print("Total Penggunaan Internet:")
+        print("Upload:", format_bytes(sent_bytes_total))
+        print("Download:", format_bytes(received_bytes_total))
+
+        print("Penggunaan CPU sebelum eksekusi: {} %".format(cpu_percent_total))
+        print("Penggunaan RAM sebelum eksekusi:", format_bytes(memory_info_total))
+
+        print(
+            f"Berhasil mengambil {len(hasil)} produk dalam {end_time - start_time} detik."
+        )
+        data = {
+            "upload": format_bytes(sent_bytes_total),
+            "download": format_bytes(received_bytes_total),
+            "cpu": f"{format(cpu_percent_total)}%",
+            "ram": format_bytes(memory_info_total),
+            "keyword": input.keyword,
+            "pages": input.pages,
+            "time": f"{end_time - start_time} detik",
+            "jumlah": len(hasil),
+            "hasil": hasil,
+        }
+        data_seleniumhttpx.append(data)
+        return data_seleniumhttpx
     except Exception as e:
         return e
 
@@ -92,8 +151,9 @@ def scrape(keyword, page):
     driver = webdriver.Chrome("./chromedriver")
     try:
         # await asyncio.sleep(2)
+        print(f"Membuka page {page}...")
         driver.get(f"https://www.tokopedia.com/search?q={keyword}&page={page}")
-        print("Menunggu reload...")
+        print(f"Menunggu reload page {page}...")
         time.sleep(
             5
         )  # Tunggu beberapa detik untuk memastikan halaman telah selesai dimuat
@@ -128,21 +188,6 @@ def scrape(keyword, page):
         return soup_produk
     except Exception as e:
         print(f"Terjadi kesalahan saat mengakses halaman {page}: {str(e)}")
-
-
-def scroll(page, scroll_amount):
-    try:
-        prev_height = page.evaluate("document.documentElement.scrollTop")
-        while True:
-            page.wait_for_selector(".css-974ipl", timeout=1800000)
-            page.evaluate(f"window.scrollBy(0, {scroll_amount});")
-            curr_height = page.evaluate("document.documentElement.scrollTop")
-            if prev_height == curr_height:
-                break
-            prev_height = curr_height
-            print("Scrolling...")
-    except Exception as e:
-        print(f"Terjadi kesalahan saat Scrolling: {str(e)}")
 
 
 async def scrape_produk(product_soup, headers, session):
@@ -349,3 +394,21 @@ def data_shop(shop_link, session, headers):
     else:
         print(f"Gagal melakukan koneksi ke {shop_link} setelah mencoba beberapa kali.")
         return {}
+
+
+def get_network_usage():
+    network_stats = psutil.net_io_counters()
+    sent_bytes = network_stats.bytes_sent
+    received_bytes = network_stats.bytes_recv
+
+    return sent_bytes, received_bytes
+
+
+def format_bytes(bytes):
+    # Fungsi ini mengubah ukuran byte menjadi format yang lebih mudah dibaca
+    sizes = ["B", "KB", "MB", "GB", "TB"]
+    i = 0
+    while bytes >= 1024 and i < len(sizes) - 1:
+        bytes /= 1024
+        i += 1
+    return "{:.2f} {}".format(bytes, sizes[i])
