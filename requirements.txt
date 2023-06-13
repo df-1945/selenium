@@ -5,3 +5,4 @@ pydantic==1.10.8
 asyncio==3.4.3
 httpx==0.24.1
 selenium==4.9.1
+psutil==5.9.5
