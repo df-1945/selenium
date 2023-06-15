@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from bs4 import BeautifulSoup
 from pydantic import BaseModel
@@ -11,6 +11,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
 from enum import Enum
 import psutil
+from typing import List, Dict, Optional
 
 app = FastAPI()
 
@@ -29,35 +30,41 @@ app.add_middleware(
 )
 
 
-class Metode(str, Enum):
+class Status(str, Enum):
     def __str__(self):
         return str(self.value)
 
-    HTTPX = "SELENIUMHTTPX"
+    BARU = "baru"
+    LAMA = "lama"
+
+
+class Hasil(BaseModel):
+    keyword: str
+    pages: int
+    status: Status
+    upload: str
+    download: str
+    time: float
+    cpu_max_percent: Optional[float] = None
+    ram_max_percent: Optional[float] = None
+    jumlah: int
+    hasil: Optional[List[Dict]] = None
 
 
 class DataRequest(BaseModel):
     keyword: str
     pages: int
-    metode: Metode
 
 
 data_seleniumhttpx = []
 
 
-@app.post("/seleniumhttpx/{userAgent}")
-def input_seleniumhttpx(userAgent: str, input: DataRequest):
+@app.post("/seleniumhttpx")
+def input_seleniumhttpx(request: Request, input: DataRequest):
     try:
-        headers = {"User-Agent": userAgent}
-        process = psutil.Process()
-
-        # Dapatkan penggunaan CPU sebelum eksekusi
-        cpu_percent_before = process.cpu_percent(interval=None)
-
-        # Dapatkan penggunaan RAM sebelum eksekusi
-        memory_info_before = process.memory_info().rss
-
         sent_bytes_start, received_bytes_start = get_network_usage()
+
+        headers = {"User-Agent": request.headers.get("User-Agent")}
 
         start_time = time.time()
         hasil = main(headers, input.keyword, input.pages)
@@ -68,37 +75,20 @@ def input_seleniumhttpx(userAgent: str, input: DataRequest):
         sent_bytes_total = sent_bytes_end - sent_bytes_start
         received_bytes_total = received_bytes_end - received_bytes_start
 
-        # Dapatkan penggunaan CPU saat eksekusi
-        cpu_percent_during = process.cpu_percent(interval=None)
-
-        # Dapatkan penggunaan RAM saat eksekusi
-        memory_info_during = process.memory_info().rss
-
-        cpu_percent_total = (
-            max(cpu_percent_during, cpu_percent_before) - cpu_percent_before
-        )
-        memory_info_total = (
-            max(memory_info_during, memory_info_before) - memory_info_before
-        )
-
         print("Total Penggunaan Internet:")
         print("Upload:", format_bytes(sent_bytes_total))
         print("Download:", format_bytes(received_bytes_total))
-
-        print("Penggunaan CPU sebelum eksekusi: {} %".format(cpu_percent_total))
-        print("Penggunaan RAM sebelum eksekusi:", format_bytes(memory_info_total))
 
         print(
             f"Berhasil mengambil {len(hasil)} produk dalam {end_time - start_time} detik."
         )
         data = {
-            "upload": format_bytes(sent_bytes_total),
-            "download": format_bytes(received_bytes_total),
-            "cpu": f"{format(cpu_percent_total)}%",
-            "ram": format_bytes(memory_info_total),
             "keyword": input.keyword,
             "pages": input.pages,
-            "time": f"{end_time - start_time} detik",
+            "status": "baru",
+            "upload": format_bytes(sent_bytes_total),
+            "download": format_bytes(received_bytes_total),
+            "time": end_time - start_time,
             "jumlah": len(hasil),
             "hasil": hasil,
         }
@@ -412,3 +402,61 @@ def format_bytes(bytes):
         bytes /= 1024
         i += 1
     return "{:.2f} {}".format(bytes, sizes[i])
+
+
+@app.get("/data")
+def ambil_data(
+    keyword: Optional[str] = None,
+    pages: Optional[int] = None,
+    status: Optional[Status] = None,
+):
+    if status is not None or keyword is not None or pages is not None:
+        result_filter = []
+        for data in data_seleniumhttpx:
+            data = Hasil.parse_obj(data)
+            if (
+                status == data.status
+                and data.keyword == keyword
+                and data.pages == pages
+            ):
+                result_filter.append(data)
+    else:
+        result_filter = data_seleniumhttpx
+    return result_filter
+
+
+@app.put("/monitoring")
+def ambil_data(input: DataRequest):
+    for data in data_seleniumhttpx:
+        if (
+            data["status"] == "baru"
+            and data["keyword"] == input.keyword
+            and data["pages"] == input.pages
+        ):
+            cpu_percent_max = 0  # Highest CPU usage during execution
+            ram_percent_max = 0  # Highest RAM usage during execution
+
+            interval = 0.1  # Interval for monitoring (seconds)
+            duration = data["time"]
+            num_intervals = int(duration / interval) + 1
+
+            for _ in range(num_intervals):
+                cpu_percent = psutil.cpu_percent(interval=interval)
+                print("cpu", cpu_percent)
+                ram_percent = psutil.virtual_memory().percent
+                print("ram", ram_percent)
+
+                if cpu_percent > cpu_percent_max:
+                    cpu_percent_max = cpu_percent
+
+                if ram_percent > ram_percent_max:
+                    ram_percent_max = ram_percent
+
+            data["cpu_max_percent"] = cpu_percent_max
+            data["ram_max_percent"] = ram_percent_max
+            data["status"] = "lama"
+
+        else:
+            data = None
+
+    return data
